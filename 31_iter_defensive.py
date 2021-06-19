@@ -29,4 +29,4 @@ if __name__ == '__main__':
     print(normalize_defensive(visits))
 
     visits = ReadVisits('./test.txt')
-    print(normalize_defensive(iter(visits))
+    print(normalize_defensive(iter(visits)))
