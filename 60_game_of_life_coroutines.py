@@ -1,7 +1,5 @@
-from threading import Lock, Thread
-import socket
 import time
-from queue import Queue
+import asyncio
 
 
 ALIVE = '*'
@@ -28,37 +26,6 @@ class Grid:
 		return text
 
 
-class CloseableQueue(Queue):
-	SENTINEL = object()
-
-	def close(self):
-		self.put(self.SENTINEL)
-
-	def __iter__(self):
-		while True:
-			item = self.get()
-			try:
-				if item is self.SENTINEL:
-					return
-				yield item
-			finally:
-				self.task_done()
-
-
-class StoppableWorker(Thread):
-	def __init__(self, func, in_queue, out_queue):
-		super().__init__()
-		self.in_queue = in_queue
-		self.out_queue = out_queue
-		self.func = func
-
-	def run(self):
-		for item in self.in_queue:
-			result = self.func(item)
-			self.out_queue.put(result)
-
-
-# if this function need threading, i need to create another queue for this
 def count_neighbors(y, x, get):
 	n_ = get(y - 1, x + 0)
 	ne = get(y - 1, x + 1)
@@ -76,9 +43,10 @@ def count_neighbors(y, x, get):
 	return count
 
 
-def game_logic(state, neighbors):
-	time.sleep(0.1)
-	# raise OSError('Problem with I/O')
+
+
+async def game_logic(state, neighbors):
+	await asyncio.sleep(0.1)
 	if state == ALIVE:
 		if neighbors < 2 or neighbors > 3:
 			return EMPTY
@@ -88,38 +56,23 @@ def game_logic(state, neighbors):
 	return state
 
 
-def game_logic_thread(item):
-	y, x, state, negihbors = item
-	try:
-		next_state = game_logic(state, negihbors)
-	except Exception as e:
-		next_state = e
-	return (y, x, next_state)
+async def step_call(y, x, get, set):
+	state = get(y, x)
+	neighbors = count_neighbors(y, x, get)
+	next_state = await game_logic(state, neighbors)
+	set(y, x, next_state)
 
 
-class SimulationError(Exception):
-	pass
+async def simulate(grid):
+	next_grid = Grid(grid.height, grid.width)
 
-
-# difficult to read
-def simulate_pipeline(grid, in_queue, out_queue):
+	tasks = []
 	for y in range(grid.height):
 		for x in range(grid.width):
-			state = grid.get(y, x)
-			neighbors = count_neighbors(y, x, grid.get)
-			in_queue.put((y, x, state, neighbors))
-		
-	in_queue.join()
-	out_queue.close()
-
-	next_grid = Grid(grid.height, grid.width)
-	for item in out_queue:
-		y, x, next_state = item
-		if isinstance(next_state, Exception):
-			raise SimulationError(y, x) from next_state
-		next_grid.set(y, x, next_state)
-
-	return next_grid	
+			task = step_call(y, x, grid.get, next_grid.set)
+			tasks.append(task)
+	await asyncio.gather(*tasks)
+	return next_grid
 
 
 class ColumnPrinter:
@@ -152,16 +105,6 @@ class ColumnPrinter:
 
 if __name__ == '__main__':
 	start = time.time()
-
-	in_queue = CloseableQueue()
-	out_queue = CloseableQueue()
-
-	threads = []
-	for _ in range(5):
-		thread = StoppableWorker(game_logic_thread, in_queue, out_queue)
-		thread.start()
-		threads.append(thread)
-
 	grid = Grid(5, 9)
 	grid.set(0, 4, ALIVE)
 	grid.set(1, 5, ALIVE)
@@ -177,16 +120,11 @@ if __name__ == '__main__':
 	grid.set(3, 4, ALIVE)
 
 	columns = ColumnPrinter()
-	for i in range(5):
+	for i in range(4):
 		columns.append(str(grid))
-		grid = simulate_pipeline(grid, in_queue, out_queue)
+		grid = asyncio.run(simulate(grid))
 
 	print(columns)
-
-	for thread in threads:
-		in_queue.close()
-	for thread in threads:
-		thread.join()
 
 	end = time.time()
 	print(f'runtime {end-start:.3f} s')

@@ -1,7 +1,6 @@
-from threading import Lock, Thread
-import socket
 import time
-from queue import Queue
+from threading import Lock
+from concurrent.futures import ThreadPoolExecutor
 
 
 ALIVE = '*'
@@ -28,37 +27,23 @@ class Grid:
 		return text
 
 
-class CloseableQueue(Queue):
-	SENTINEL = object()
+class LockingGrid(Grid):
+	def __init__(self, height, width):
+		super().__init__(height, width)
+		self.lock = Lock()
 
-	def close(self):
-		self.put(self.SENTINEL)
+	def get(self, y, x):
+		with self.lock:
+			return super().get(y, x)
 
-	def __iter__(self):
-		while True:
-			item = self.get()
-			try:
-				if item is self.SENTINEL:
-					return
-				yield item
-			finally:
-				self.task_done()
+	def set(self, y, x, state):
+		with self.lock:
+			return super().set(y, x, state)
 
-
-class StoppableWorker(Thread):
-	def __init__(self, func, in_queue, out_queue):
-		super().__init__()
-		self.in_queue = in_queue
-		self.out_queue = out_queue
-		self.func = func
-
-	def run(self):
-		for item in self.in_queue:
-			result = self.func(item)
-			self.out_queue.put(result)
+	def __str__(self):
+		return super().__str__()
 
 
-# if this function need threading, i need to create another queue for this
 def count_neighbors(y, x, get):
 	n_ = get(y - 1, x + 0)
 	ne = get(y - 1, x + 1)
@@ -78,7 +63,6 @@ def count_neighbors(y, x, get):
 
 def game_logic(state, neighbors):
 	time.sleep(0.1)
-	# raise OSError('Problem with I/O')
 	if state == ALIVE:
 		if neighbors < 2 or neighbors > 3:
 			return EMPTY
@@ -88,38 +72,27 @@ def game_logic(state, neighbors):
 	return state
 
 
-def game_logic_thread(item):
-	y, x, state, negihbors = item
-	try:
-		next_state = game_logic(state, negihbors)
-	except Exception as e:
-		next_state = e
-	return (y, x, next_state)
+def step_call(y, x, get, set):
+	state = get(y, x)
+	neighbors = count_neighbors(y, x, get)
+	next_state = game_logic(state, neighbors)
+	set(y, x, next_state)
 
 
-class SimulationError(Exception):
-	pass
+def simulate_pool(pool, grid):
+	next_grid = Grid(grid.height, grid.width)
 
-
-# difficult to read
-def simulate_pipeline(grid, in_queue, out_queue):
+	futures = []
 	for y in range(grid.height):
 		for x in range(grid.width):
-			state = grid.get(y, x)
-			neighbors = count_neighbors(y, x, grid.get)
-			in_queue.put((y, x, state, neighbors))
-		
-	in_queue.join()
-	out_queue.close()
+			args = (y, x, grid.get, next_grid.set)
+			future = pool.submit(step_call, *args)
+			futures.append(future)
 
-	next_grid = Grid(grid.height, grid.width)
-	for item in out_queue:
-		y, x, next_state = item
-		if isinstance(next_state, Exception):
-			raise SimulationError(y, x) from next_state
-		next_grid.set(y, x, next_state)
+	for future in futures:
+		future.result()
 
-	return next_grid	
+	return next_grid
 
 
 class ColumnPrinter:
@@ -152,16 +125,6 @@ class ColumnPrinter:
 
 if __name__ == '__main__':
 	start = time.time()
-
-	in_queue = CloseableQueue()
-	out_queue = CloseableQueue()
-
-	threads = []
-	for _ in range(5):
-		thread = StoppableWorker(game_logic_thread, in_queue, out_queue)
-		thread.start()
-		threads.append(thread)
-
 	grid = Grid(5, 9)
 	grid.set(0, 4, ALIVE)
 	grid.set(1, 5, ALIVE)
@@ -177,16 +140,12 @@ if __name__ == '__main__':
 	grid.set(3, 4, ALIVE)
 
 	columns = ColumnPrinter()
-	for i in range(5):
-		columns.append(str(grid))
-		grid = simulate_pipeline(grid, in_queue, out_queue)
+	with ThreadPoolExecutor(max_workers=10) as pool:
+		for i in range(4):
+			columns.append(str(grid))
+			grid = simulate_pool(pool, grid)
 
 	print(columns)
-
-	for thread in threads:
-		in_queue.close()
-	for thread in threads:
-		thread.join()
 
 	end = time.time()
 	print(f'runtime {end-start:.3f} s')
