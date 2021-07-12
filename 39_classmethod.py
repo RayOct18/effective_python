@@ -91,7 +91,7 @@ def write_test_files(tmpdir):
     os.makedirs(tmpdir, exist_ok=True)
     for i in range(100):
         with open(os.path.join(tmpdir, str(i)), 'w') as f:
-            f.write('\n' * random.randint(0, 100))
+            f.write(f'{random.randint(0, 10)}\n' * random.randint(0, 100))
 
 
 if __name__ == '__main__':
