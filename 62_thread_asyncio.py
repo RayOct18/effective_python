@@ -46,7 +46,14 @@ def run_threads(handles, interval, output_path):
 			thread.join()
 
 def confirm_merge(input_paths, output_path):
-	pass
+	inputs_cnt = output_cnt = 0
+	for f in os.listdir(input_paths):
+		with open(os.path.join(input_paths, f), 'r') as fh:
+			inputs_cnt += len(fh.readlines())
+	with open(output_path, 'r') as fh:
+		output_cnt += len(fh.readlines())
+	assert inputs_cnt == output_cnt
+	print(inputs_cnt, output_cnt)
 
 import os
 
